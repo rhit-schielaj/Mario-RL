@@ -35,9 +35,9 @@ LOG_REWARD_DIR = "logs/rew"
 CHECKPOINT_DIR = "checkpoints"
 ACTION_SIZE = 8
 UPDATE_EPOCHS = 16
-ROLLOUT_LENGTH = 8192
-START_EPISODE = 1000
-MINIBATCH_SIZE = 256  # For minibatch updates
+ROLLOUT_LENGTH = 2048
+START_EPISODE = 0
+MINIBATCH_SIZE = 64  # For minibatch updates
 
 if LOG_DEVICE_INFO:
     print(f"Using device: {DEVICE}")
@@ -62,31 +62,37 @@ def log_file(filepath, message):
 class ActorCritic(nn.Module):
     def __init__(self, action_size):
         super().__init__()
+        
+        # Helper for orthogonal initialization
+        def _layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+            torch.nn.init.orthogonal_(layer.weight, std)
+            torch.nn.init.constant_(layer.bias, bias_const)
+            return layer
+
         # Shared convolutional layers
         self.conv = nn.Sequential(
-            nn.Conv2d(NUMBER_OF_SEQUENTIAL_FRAMES*3, 32, kernel_size=8, stride=4),
+            _layer_init(nn.Conv2d(NUMBER_OF_SEQUENTIAL_FRAMES*3, 32, kernel_size=8, stride=4)),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            _layer_init(nn.Conv2d(32, 64, kernel_size=4, stride=2)),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            _layer_init(nn.Conv2d(64, 64, kernel_size=3, stride=1)),
             nn.ReLU()
         )
         
-        # Calculate flattened size
         conv_out_size = self._get_conv_out((NUMBER_OF_SEQUENTIAL_FRAMES*3, 60, 80))
         
-        # Actor head (policy)
+        # Actor head (policy) - Output layer scaled by 0.01 to encourage exploration
         self.actor = nn.Sequential(
-            nn.Linear(conv_out_size, 512),
+            _layer_init(nn.Linear(conv_out_size, 512)),
             nn.ReLU(),
-            nn.Linear(512, action_size)
+            _layer_init(nn.Linear(512, action_size), std=0.01) 
         )
         
-        # Critic head (value function)
+        # Critic head (value function) - Output layer scaled by 1
         self.critic = nn.Sequential(
-            nn.Linear(conv_out_size, 512),
+            _layer_init(nn.Linear(conv_out_size, 512)),
             nn.ReLU(),
-            nn.Linear(512, 1)
+            _layer_init(nn.Linear(512, 1), std=1)
         )
     
     def _get_conv_out(self, shape):
@@ -320,7 +326,7 @@ log_path_episodic = os.path.join(LOG_REWARD_DIR, "episodic_info.txt")
 log_path_policy = os.path.join(LOG_REWARD_DIR, "policy_info.txt")
 log_path_avg_reward = os.path.join(LOG_REWARD_DIR, "avg_reward.txt")
 
-agent.load(f'checkpoints/ppo_episode_{START_EPISODE}.pth')  # Uncomment to load checkpoint
+# agent.load(f'checkpoints/ppo_episode_{START_EPISODE}.pth')  # Uncomment to load checkpoint
 
 reward_history = deque(maxlen=REWARD_HISTORY_SIZE)
 global_step = 0
@@ -335,12 +341,12 @@ for episode in range(START_EPISODE+1, N_EPISODES):
         # Select action using policy
         action_idx, log_prob, value = agent.select_action(state)
         action = index_to_multibinary(action_idx)
-        
+
         # Take action in environment
         next_state, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         next_state = torch.FloatTensor(next_state).to(DEVICE)
-        
+        reward = reward * 0.01
         # Store transition
         agent.store_transition(state, action_idx, reward, value, log_prob, done)
         
@@ -363,7 +369,6 @@ for episode in range(START_EPISODE+1, N_EPISODES):
             
             # Train on collected data
             policy_loss, value_loss, entropy, clipfrac = agent.train_step()
-            global_step = 0
             
             if LOG_UPDATE_METRICS:
                 msg = (f"  Update - Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}, "
@@ -373,6 +378,7 @@ for episode in range(START_EPISODE+1, N_EPISODES):
         
         # When episode ends, finish the current trajectory and break
         if done:
+            global_step = 0
             agent.rollout_buffer.finish_path(last_value=0)
             break
     

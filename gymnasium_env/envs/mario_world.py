@@ -65,7 +65,7 @@ class MarioLevelEnv(gym.Env):
             "win_bonus": 500.0,
             "jump_tap_cost": 0,
             "jump_hold_cost": 0,
-            "time_penalty": -0.05,
+            "time_penalty": -0.04,
         }
         if reward_cfg:
             self.rw.update(reward_cfg)
